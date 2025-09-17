@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>multi-object tracker</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <link rel="icon" href="{{ url_for('static', filename='gun-target-icon.png') }}" type="image/png">
+</head>
+<body>
+
+  <div id="title-screen">
+    <button id="title-button" onclick="enterApp()">multi-object tracker</button>
+  </div>
+
+  <div id="app-interface">
+    <div id="controls">
+      <button onclick="startWebcam()">start webcam</button>
+      <input type="file" id="videoInput" onchange="uploadVideo()">
+      <button onclick="startTracking()">start tracking</button>
+      <button onclick="clearROIs()">clear rois</button>
+      <button onclick="stopTracking()">stop tracking</button>
+    </div>
+
+    <canvas id="canvas"></canvas>
+
+    <div>
+      <h3>live stream:</h3>
+      <img id="stream" src="">
+    </div>
+
+    <div>
+        <input type="text" id="filenameInput" placeholder="Enter filename..." />
+        <button id="downloadBtn" onclick="downloadVideo()" disabled>download video</button>
+        <button id="startRecBtn" onclick="toggleRecording()">start recording</button>
+        <button id="stopRecBtn" onclick="stopRecording()" disabled>stop recording</button>
+        <progress id="downloadProgress" value="0" max="100" style="display: none; width: 300px;"></progress>
+    </div>
+  </div>
+
+  <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
