@@ -33,6 +33,13 @@ def upload():
         selected_rois = []
     return '', 204
 
+@app.route('/start_webcam', methods=['POST'])
+def start_webcam():
+    global use_webcam, selected_rois
+    use_webcam = True
+    selected_rois = []
+    return '', 204
+
 @app.post('/ingest_frame')
 def ingest_frame():
     f = request.files['frame'].read()
