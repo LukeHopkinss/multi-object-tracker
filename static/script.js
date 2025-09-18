@@ -14,15 +14,23 @@ function enterApp() {
   }, 1000);
 }
 
-function loadFirstFrame() {
-  fetch("/first_frame")
-    .then(res => res.json())
-    .then(data => {
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+async function loadFirstFrame(maxRetries = 40, delayMs = 150) {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      const res = await fetch("/first_frame");
+      if (!res.ok) {                // handle 503/500 gracefully
+        await sleep(delayMs);
+        continue;
+      }
+      const data = await res.json();
+
       originalWidth = data.width;
       originalHeight = data.height;
 
       const byteArray = new Uint8Array(data.image.match(/.{1,2}/g).map(b => parseInt(b, 16)));
-      const blob = new Blob([byteArray], { type: 'image/jpeg' });
+      const blob = new Blob([byteArray], { type: "image/jpeg" });
       const url = URL.createObjectURL(blob);
 
       image.onload = () => {
@@ -32,7 +40,12 @@ function loadFirstFrame() {
         drawAllROIs();
       };
       image.src = url;
-    });
+      return; // success
+    } catch (_) {
+      await sleep(delayMs);
+    }
+  }
+  alert("No webcam frame received yet — try again.");
 }
 
 canvas.addEventListener("mousedown", e => {

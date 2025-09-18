@@ -42,19 +42,27 @@ def start_webcam():
 
 @app.post('/ingest_frame')
 def ingest_frame():
-    f = request.files['frame'].read()
-    arr = np.frombuffer(f, np.uint8)
+    f = request.files.get('frame')
+    if f is None:
+        return '', 204  # no frame; ignore quietly
+
+    data = f.read()
+    if not data:
+        return '', 204  # empty blob; ignore
+
+    arr = np.frombuffer(data, np.uint8)
     frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if frame is None:
-        return "bad frame", 400
+        return '', 204  # not decodable yet; ignore
+
     frame_buf.append(frame)
-    return '', 204     
+    return '', 204
+    
 
 @app.route('/first_frame')
 def first_frame():
     if use_webcam:
-        # wait briefly until a browser frame arrives
-        for _ in range(20):
+        for _ in range(50):  # 50 * 50ms = ~2.5s
             if frame_buf:
                 frame = frame_buf[-1]
                 break
@@ -69,7 +77,9 @@ def first_frame():
             return "Failed to capture frame", 500
 
     h, w = frame.shape[:2]
-    _, buffer = cv2.imencode('.jpg', frame)
+    ok, buffer = cv2.imencode('.jpg', frame)
+    if not ok:
+        return "encode error", 500
     return {"image": buffer.tobytes().hex(), "width": w, "height": h}
 
 @app.route('/select_rois', methods=['POST'])
