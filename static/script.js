@@ -86,13 +86,39 @@ function uploadVideo() {
   });
 }
 
-function startWebcam() {
-  fetch("/start_webcam", { method: "POST" })
-    .then(() => {
-      rois = [];
-      loadFirstFrame();
-      document.getElementById("stream").src = "";
-    });
+let webcamStream, pushTimer;
+
+async function startWebcam() {
+  // notify server we’re in webcam mode 
+  await fetch("/start_webcam", { method: "POST" });
+
+  // get webcam in the browser
+  const media = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+  webcamStream = media;
+
+  const videoEl = document.createElement("video");
+  videoEl.srcObject = media;
+  await videoEl.play();
+
+  // offscreen canvas to JPEG-encode frames
+  const buf = document.createElement("canvas");
+  const W = 640, H = 480;   // pick a steady size
+  buf.width = W; buf.height = H;
+  const bctx = buf.getContext("2d");
+
+  // start pushing frames to the server
+  pushTimer = setInterval(async () => {
+    bctx.drawImage(videoEl, 0, 0, W, H);
+    const blob = await new Promise(r => buf.toBlob(r, "image/jpeg", 0.7));
+    const fd = new FormData();
+    fd.append("frame", blob, "frame.jpg");
+    await fetch("/ingest_frame", { method: "POST", body: fd });
+  }, 100); // ~10 fps
+
+  // reset ROIs and fetch the first frame rendered by the server
+  rois = [];
+  setTimeout(() => loadFirstFrame(), 300); // small delay so server has a frame
+  document.getElementById("stream").src = ""; // stays blank until you click "start tracking"
 }
 
 function startTracking() {
