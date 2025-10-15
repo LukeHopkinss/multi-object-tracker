@@ -317,20 +317,31 @@ function toggleRecording() {
 }
 
 function stopRecording() {
-  fetch("/stop_recording", { method: "POST" }).then(() => {
-    toast("Recording stopped.", "info");
-    document.getElementById("startRecBtn").disabled = false;
-    document.getElementById("stopRecBtn").disabled = true;
-    document.getElementById("downloadBtn").disabled = false;
-  }).catch(() => toast("Could not stop recording.", "error"));
+  fetch("/stop_recording", { method: "POST" })
+    .then(r => r.json())
+    .then((data) => {
+      if (data.ok) {
+        toast("Recording stopped.", "info");
+        document.getElementById("startRecBtn").disabled = false;
+        document.getElementById("stopRecBtn").disabled = true;
+        document.getElementById("downloadBtn").disabled = false;
+
+        // Auto-fill the actual filename from backend (prevents 404s)
+        const input = document.getElementById("filenameInput");
+        if (input && data.file_id) input.value = data.file_id;
+      } else {
+        toast("No video wrote to disk. Try recording longer.", "warn");
+      }
+    })
+    .catch(() => toast("Could not stop recording.", "error"));
 }
 
 function downloadVideo() {
-  const filename = document.getElementById("filenameInput").value.trim();
-  if (!filename) { toast("Please enter a filename.", "warn"); return; }
+  let name = document.getElementById("filenameInput").value.trim();
+  if (!name) name = "latest"; // fallback is newest non-zero recording
 
   const xhr = new XMLHttpRequest();
-  xhr.open("GET", `/download/${encodeURIComponent(filename)}`, true);
+  xhr.open("GET", `/download/${encodeURIComponent(name)}`, true);
   xhr.responseType = "blob";
 
   const progressBar = document.getElementById("downloadProgress");
@@ -344,16 +355,20 @@ function downloadVideo() {
 
   xhr.onload = () => {
     if (xhr.status === 200) {
-      const blob = new Blob([xhr.response], { type: "video/x-msvideo" });
-      const url = window.URL.createObjectURL(blob);
+      // Respect server-provided filename if present
+      const disp = xhr.getResponseHeader("Content-Disposition") || "";
+      const suggested = /filename="?([^"]+)"?/.exec(disp)?.[1] || `${name}`;
+      const blob = new Blob([xhr.response]);
       const a = document.createElement("a");
-      a.href = url;
-      a.download = `${filename}.avi`;
+      a.href = window.URL.createObjectURL(blob);
+      a.download = suggested;
       a.click();
-      window.URL.revokeObjectURL(url);
+      window.URL.revokeObjectURL(a.href);
       toast("Download ready.", "info");
+    } else if (xhr.status === 404) {
+      toast("File not found. Try 'latest' or stop recording first.", "error");
     } else {
-      toast("Download failed.", "error");
+      toast(`Download failed (${xhr.status}).`, "error");
     }
     if (progressBar) progressBar.style.display = "none";
   };
