@@ -34,6 +34,9 @@ PREVIEW_W, PREVIEW_H = 640, 360
 JPEG_QUALITY = 70
 TRACK_EVERY_N = 2
 
+# Webcam recording FPS target (wall-clock paced)
+WEBCAM_RECORD_FPS = float(os.environ.get("WEBCAM_RECORD_FPS", "20.0"))
+
 # Live webcam frame buffer
 frame_buf = deque(maxlen=1)
 
@@ -47,6 +50,10 @@ recording: bool = False
 writer: Optional[cv2.VideoWriter] = None
 writer_path: Optional[Path] = None  # OUTPUT_DIR / <uuid>.<ext>
 last_file_id: Optional[str] = None  # convenience; not relied on for 'latest' anymore
+
+# Pacing state (webcam only)
+_rec_next_due: Optional[float] = None    # perf_counter time when next frame should be written
+_rec_fps_target: Optional[float] = None  # fps used to pace & to open writer
 
 
 # ======== Utilities ========
@@ -77,10 +84,10 @@ def _new_tracker():
         )
 
 
-def _open_writer_safe(path: Path, fps: float, size_wh: tuple) -> Optional[cv2.VideoWriter]:
+def _open_writer_safe(path: Path, fps: float, size_wh: tuple):
     """
     Try several codecs in order of broad Linux compatibility.
-    Returns an opened writer or None.
+    Returns (writer, final_path) or (None, None).
     """
     W, H = size_wh
     trials = [
@@ -90,20 +97,17 @@ def _open_writer_safe(path: Path, fps: float, size_wh: tuple) -> Optional[cv2.Vi
     ]
     for name, ext, fourcc in trials:
         try_path = path.with_suffix(ext)
-        writer = cv2.VideoWriter(str(try_path), fourcc, float(fps or 30.0), (W, H))
-        if writer is not None and writer.isOpened():
-            app.logger.info("VideoWriter opened with %s at %s", name, try_path)
-            return writer, try_path
-        if writer is not None:
-            writer.release()
+        wr = cv2.VideoWriter(str(try_path), fourcc, float(fps or 30.0), (W, H))
+        if wr is not None and wr.isOpened():
+            app.logger.info("VideoWriter opened with %s at %s (fps=%s)", name, try_path, fps)
+            return wr, try_path
+        if wr is not None:
+            wr.release()
     app.logger.error("All VideoWriter codec attempts failed (MJPG/mp4v/XVID).")
     return None, None
 
 
 def _scan_latest_nonzero() -> Optional[Path]:
-    """
-    Return newest non-zero file in OUTPUT_DIR with allowed extensions.
-    """
     cand = []
     for ext in ALLOWED_DOWNLOAD_EXTS:
         cand.extend(OUTPUT_DIR.glob(f"*{ext}"))
@@ -258,15 +262,18 @@ def video_feed():
 
 @app.post("/toggle_recording")
 def toggle_recording():
-    global recording, writer, writer_path, last_file_id
+    global recording, writer, writer_path, last_file_id, _rec_next_due, _rec_fps_target
     if recording:
         return jsonify({"ok": True, "message": "already recording",
                        "file_id": writer_path.name if writer_path else None}), 200
     recording = True
     writer = None  # create lazily when we know W/H/fps
-    # writer_path is the *base* path; codec function may adjust suffix
     writer_path = (OUTPUT_DIR / f"{uuid4().hex}").resolve()
     last_file_id = None
+
+    # For webcam, pace at WEBCAM_RECORD_FPS; for file we'll use source fps later
+    _rec_next_due = None
+    _rec_fps_target = None  # will be set when writer is opened
     app.logger.info("Recording requested; base path: %s", writer_path)
     return jsonify({"ok": True, "file_id": writer_path.name}), 200
 
@@ -283,7 +290,6 @@ def stop_recording():
         writer = None
 
     # Determine final path (could be .avi or .mp4 based on writer open)
-    # Find any file with the same stem and allowed ext
     final = None
     if writer_path:
         for ext in ALLOWED_DOWNLOAD_EXTS:
@@ -312,7 +318,6 @@ def stop_recording():
 
 @app.get("/last_recording")
 def last_recording():
-    # Prefer scanning disk so it works across workers
     p = _scan_latest_nonzero()
     if not p:
         return "no completed recording", 404
@@ -343,6 +348,7 @@ def _download_impl(name: str):
 # ======== Stream loop ========
 def _generate_stream():
     global use_webcam, video_path, selected_rois, writer, writer_path, recording
+    global _rec_next_due, _rec_fps_target
 
     # Get first frame source
     if use_webcam:
@@ -355,7 +361,7 @@ def _generate_stream():
         if frame is None:
             app.logger.warning("No webcam frames available for streaming")
             return
-        fps = 20.0
+        fps_src = WEBCAM_RECORD_FPS  # UI pushes ~20fps; we *record* at this exact rate
         cap = None
     else:
         if not video_path:
@@ -370,7 +376,7 @@ def _generate_stream():
             cap.release()
             app.logger.error("Failed to read first frame from video")
             return
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        fps_src = cap.get(cv2.CAP_PROP_FPS) or 30.0  # use source fps for file mode
 
     H, W = frame.shape[:2]
 
@@ -408,10 +414,19 @@ def _generate_stream():
 
             # Lazily open writer after first available frame when recording starts
             if recording and writer is None and writer_path is not None:
-                (wrt, final_path) = _open_writer_safe(writer_path, fps, (W, H))
+                # Choose fps for writer:
+                #  - webcam: WEBCAM_RECORD_FPS (paced)
+                #  - file:   fps_src (no pacing)
+                _rec_fps_target = float(WEBCAM_RECORD_FPS if use_webcam else fps_src)
+                (wrt, final_path) = _open_writer_safe(writer_path, _rec_fps_target, (W, H))
                 if wrt and wrt.isOpened():
                     writer = wrt
                     writer_path = final_path  # update with real extension
+                    # initialize pacing clock for webcam
+                    if use_webcam:
+                        _rec_next_due = time.perf_counter()  # write immediately
+                    else:
+                        _rec_next_due = None
                 else:
                     # Couldn't open a writer; log & disable recording this session
                     recording = False
@@ -440,12 +455,34 @@ def _generate_stream():
                 x, y, w, h = b
                 cv2.rectangle(annotated, (x, y), (x + w, y + h), (0, 220, 0), 2)
 
-            # Write full-res if recording
+            # ======= Write full-res if recording =======
             if recording and writer is not None and writer.isOpened():
-                try:
-                    writer.write(annotated)
-                except Exception as e:
-                    app.logger.exception("Writer error: %s", e)
+                if use_webcam:
+                    # Pace by wall-clock so playback == real-time
+                    now = time.perf_counter()
+                    # If we're early for the next tick, skip writing this frame
+                    if _rec_next_due is not None and now + 1e-6 < _rec_next_due:
+                        pass  # skip
+                    else:
+                        try:
+                            writer.write(annotated)
+                        except Exception as e:
+                            app.logger.exception("Writer error: %s", e)
+                        # schedule next due time
+                        tick = 1.0 / max(_rec_fps_target or WEBCAM_RECORD_FPS, 1.0)
+                        if _rec_next_due is None:
+                            _rec_next_due = now + tick
+                        else:
+                            _rec_next_due += tick
+                            # if we fell behind a lot, resync to now to avoid drift
+                            if now - _rec_next_due > 0.5:
+                                _rec_next_due = now + tick
+                else:
+                    # File mode: write every decoded frame (header fps = source fps)
+                    try:
+                        writer.write(annotated)
+                    except Exception as e:
+                        app.logger.exception("Writer error: %s", e)
 
             # Downscale + encode for preview
             preview = cv2.resize(annotated, (PREVIEW_W, PREVIEW_H), interpolation=cv2.INTER_AREA)
@@ -469,6 +506,5 @@ def _generate_stream():
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     port = int(os.environ.get("PORT", 5000))
-    # Bind 0.0.0.0 for container/Render; debug False in prod
-    app.logger.info("Starting server on http://0.0.0.0:%d", port)
+    app.logger.info("Starting server on http://0.0.0.0:%d (WEBCAM_RECORD_FPS=%s)", port, WEBCAM_RECORD_FPS)
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
