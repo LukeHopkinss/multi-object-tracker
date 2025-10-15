@@ -1,69 +1,197 @@
+/* Global type scale and smoothing */
+:root{
+  --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  --font-serif-display: "DM Serif Display", Georgia, "Times New Roman", serif;
+
+  /* Responsive type scale using clamp(min, vw, max) */
+  --fs-xxl: clamp(2rem, 3.5vw, 2.6rem);
+  --fs-xl:  clamp(1.4rem, 2.2vw, 2rem);
+  --fs-lg:  clamp(1.1rem, 1.4vw, 1.35rem);
+  --fs-md:  1rem;
+  --fs-sm:  0.9rem;
+
+  --lh-tight: 1.15;
+  --lh-normal: 1.5;
+}
+
+html {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
 body {
-    font-family: Arial, sans-serif;
-    text-align: center;
-    background-color: #f9f9f9;
-    margin: 0;
-    padding: 0;
-  }
-  
-  button {
-    font-size: 1em;
-    padding: 10px 20px;
-    margin: 10px;
-    cursor: pointer;
-  }
-  
-  canvas, #stream {
-    border: 2px solid #333;
-    margin-top: 10px;
-    max-width: 100%;
-    height: auto;
-  }
-  
-  #title-screen {
-    position: absolute;
-    top: 0; left: 0;
-    width: 100%;
-    height: 100%;
-    background-color: white;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    animation: fadeIn 1.5s;
-    z-index: 10;
-  }
-  
-  #title-button {
-    font-size: 3em;
-    border: none;
-    background: none;
-    color: #111;
-    cursor: pointer;
-    font-weight: bold;
-    transition: transform 0.2s ease;
-  }
-  
-  #title-button:hover {
-    transform: scale(1.05);
-    color: #dd2222;
-  }
-  
-  #app-interface {
-    display: none;
-    animation: fadeIn 1s;
-  }
-  
-  @keyframes fadeIn {
-    from { opacity: 0; }
-    to { opacity: 1; }
-  }
-  
-  @keyframes fadeOut {
-    from { opacity: 1; }
-    to { opacity: 0; }
-  }
-  
-  .fade-out {
-    animation: fadeOut 1s forwards;
-  }
+  font-family: var(--font-sans);
+  font-size: var(--fs-md);
+  line-height: var(--lh-normal);
+  color: #111;
+}
+
+h1, .hero-title {
+  font-family: var(--font-serif-display);
+  font-size: var(--fs-xxl);
+  line-height: var(--lh-tight);
+  letter-spacing: -0.01em;
+  margin: 0.2em 0 0.4em;
+}
+
+h2 {
+  font-family: var(--font-serif-display);
+  font-size: var(--fs-xl);
+  line-height: var(--lh-tight);
+  letter-spacing: -0.005em;
+  margin: 0.2em 0 0.4em;
+}
+
+p, label, input, button, small {
+  font-family: var(--font-sans);
+}
+
+/* Buttons: compact */
+button {
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  border-radius: 10px;
+  padding: 10px 16px;
+  font-size: 0.95rem;
+  min-height: 36px;
+  line-height: 1.1;
+}
+
+canvas, #stream {
+  font-family: var(--font-sans);
+  display: block;
+}
+
+.card {
+  background: #fff;
+  border-radius: 14px;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.06);
+  padding: 16px;
+}
+
+/* ============= TITLE SCREEN ONLY fades in/out ============= */
+#title-screen {
+  position: absolute;
+  inset: 0;
+  background-color: white;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  animation: fadeIn 0.8s;
+  z-index: 10;
+}
+
+#title-button {
+  font-size: 3em;
+  border: none;
+  background: none;
+  color: #111;
+  cursor: pointer;
+  font-weight: bold;
+  transition: transform 0.2s ease;
+}
+#title-button:hover { transform: scale(1.05); color: #dd2222; }
+
+/* ============= APP is completely hidden until title click ============= */
+#app-interface { 
+  /* No animation here. It should never be visible before click. */
+  max-width: 960px;
+  margin-left: auto;
+  margin-right: auto;
+  padding-inline: 16px;
+
+  /* Center children without touching their internals */
+  display: grid;
+  justify-items: center;
+  align-content: start;
+}
+
+/* HARD gate: before title click, hide the entire app block */
+body:not(.app-ready) #app-interface { 
+  display: none !important;
+}
+
+/* Once ready, show it normally */
+body.app-ready #app-interface { 
+  display: grid !important;
+}
+
+/* Constrain direct children too */
+#app-interface > * {
+  width: min(100%, 960px);
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* Recenter common control rows */
+#app-interface .row,
+#app-interface .controls,
+#app-interface .toolbar,
+#controls {
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+/* Keep stream responsive; canvas will be synced to this element's size in JS */
+#stream {
+  max-width: 100%;
+  height: auto;
+}
+
+/* Animations only for the title */
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes fadeOut { from { opacity: 1; } to { opacity: 0; } }
+.fade-out { animation: fadeOut 0.6s forwards; }
+
+/* ===== Toasts ===== */
+#toaster {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 9999;
+}
+
+.toast {
+  min-width: 240px;
+  max-width: 340px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: rgba(20,20,20,0.95);
+  color: #fff;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+  font: 14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  opacity: 0;
+  transform: translateY(-6px);
+  transition: all .25s ease;
+}
+.toast.show { opacity: 1; transform: translateY(0); }
+.toast.info { background: rgba(25, 118, 210, 0.95); }
+.toast.warn { background: rgba(245, 124, 0, 0.95); }
+.toast.error { background: rgba(211, 47, 47, 0.95); }
+
+
+/* Ensure canvas + preview are centered and stacked */
+#canvas,
+#stream {
+  display: block;
+  margin-left: auto;
+  margin-right: auto;
+  float: none !important;
+  max-width: 100%;
+}
+
+#stream { margin-top: 8px; }
+
+/* If a flex parent is forcing row layout, the items will still center */
+#canvas,
+#stream {
+  align-self: center;
+  flex: 0 0 auto;
+}
+
