@@ -1,4 +1,4 @@
-from flask import Flask, render_template, Response, request, jsonify, send_file
+from flask import Flask, render_template, Response, request, jsonify, send_file, abort
 import cv2
 import os
 from werkzeug.utils import secure_filename
@@ -7,6 +7,9 @@ import numpy as np
 import time
 import logging
 from uuid import uuid4
+from pathlib import Path
+import mimetypes
+import re
 
 # ===== Live preview buffer (latest frame only) =====
 frame_buf = deque(maxlen=1)
@@ -25,6 +28,10 @@ os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 app.config["MAX_CONTENT_LENGTH"] = 512 * 1024 * 1024  # 512 MB cap
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv"}
 
+# Download safety
+ALLOWED_DOWNLOAD_EXTS = [".avi", ".mp4", ".mkv", ".mov"]
+SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]{1,120}$")
+
 # ===== Globals / state =====
 video_path = None
 use_webcam = False
@@ -34,6 +41,7 @@ selected_rois = []
 recording = False
 writer = None
 writer_path = None  # set to outputs/<uuid>.avi when recording starts
+last_file_id = None  # remember last finished recording
 
 # Preview tuning
 PREVIEW_W, PREVIEW_H = 640, 360
@@ -193,7 +201,7 @@ def toggle_recording():
     Start recording to a randomized file in OUTPUT_FOLDER.
     Returns file_id the client can later use to download.
     """
-    global recording, writer, writer_path
+    global recording, writer, writer_path, last_file_id
     if recording:
         return jsonify({
             "ok": True,
@@ -205,13 +213,14 @@ def toggle_recording():
     writer = None  # created lazily on first frame when we know W,H,fps
     file_id = f"{uuid4().hex}.avi"
     writer_path = os.path.join(OUTPUT_FOLDER, file_id)
+    last_file_id = None  # reset; set on stop
     app.logger.info("Recording starting. File: %s", writer_path)
     return jsonify({"ok": True, "file_id": file_id}), 200
 
 
 @app.post('/stop_recording')
 def stop_recording():
-    global recording, writer
+    global recording, writer, writer_path, last_file_id
     recording = False
     if writer is not None:
         try:
@@ -219,21 +228,101 @@ def stop_recording():
         except Exception:
             pass
         writer = None
-    app.logger.info("Recording stopped")
-    return '', 204
+
+    # Report the finished file (if any) and guard against zero-byte downloads
+    file_id = os.path.basename(writer_path) if writer_path else None
+    path = Path(writer_path) if writer_path else None
+    size = path.stat().st_size if path and path.exists() else 0
+    if size > 0:
+        last_file_id = file_id
+        app.logger.info("Recording stopped. Saved %s (%d bytes)", file_id, size)
+        return jsonify({"ok": True, "file_id": file_id, "size": size}), 200
+    else:
+        # If nothing was written, clean up stub if present
+        if path and path.exists():
+            try:
+                path.unlink()
+            except Exception:
+                pass
+        app.logger.warning("Recording stopped but no data was written.")
+        return jsonify({"ok": False, "error": "no data written"}), 409
 
 
-@app.get('/download/<file_id>')
-def download_file(file_id: str):
+@app.get('/last_recording')
+def last_recording():
+    """Return most recent completed recording id (or 404)."""
+    if not last_file_id:
+        return "no completed recording", 404
+    return jsonify({"file_id": last_file_id})
+
+
+def _resolve_output_file(name: str) -> Path | None:
     """
-    file_id is the randomized name created when recording started, e.g. 9c9a0d7...e7a0b.avi
+    Resolve a requested download name to an actual file in OUTPUT_FOLDER.
+    Supports:
+    - exact randomized file_id, e.g., 'abc123...def.avi'
+    - stem-only (tries common extensions)
+    - 'latest'/'last' alias for most recent finished file
     """
-    safe = secure_filename(file_id)
-    path = os.path.join(OUTPUT_FOLDER, safe)
-    if not os.path.exists(path):
-        return "file not found", 404
-    # Customize the user-visible name if desired with download_name
-    return send_file(path, as_attachment=True, download_name=safe)
+    global last_file_id
+    base = Path(OUTPUT_FOLDER).resolve()
+    if not name or len(name) > 120:
+        return None
+
+    # latest alias
+    if name.lower() in ("latest", "last") and last_file_id:
+        p = (base / last_file_id).resolve()
+        if p.exists() and p.is_file():
+            return p
+
+    # sanitize input
+    if not SAFE_NAME.match(name):
+        return None
+
+    # if has ext, try that exact file
+    p = Path(name)
+    candidates = []
+    if p.suffix.lower() in ALLOWED_DOWNLOAD_EXTS:
+        candidates.append(p.name)
+    else:
+        # try common extensions
+        for ext in ALLOWED_DOWNLOAD_EXTS:
+            candidates.append(p.name + ext)
+
+    for cand in candidates:
+        path = (base / cand).resolve()
+        try:
+            if base in path.parents or path.parent == base:
+                if path.exists() and path.is_file() and path.stat().st_size > 0:
+                    return path
+        except Exception:
+            pass
+    return None
+
+
+@app.get('/download')
+def download_query():
+    """Support /download?filename=foo"""
+    name = (request.args.get("filename") or "").strip()
+    if not name:
+        abort(400, description="Missing filename")
+    return _download_impl(name)
+
+
+@app.get('/download/<path:name>')
+def download_path(name):
+    """Support /download/foo (stem, exact, or 'latest')"""
+    return _download_impl(name)
+
+
+def _download_impl(name: str):
+    path = _resolve_output_file(name)
+    if not path:
+        abort(404, description="File not found")
+
+    ctype = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    # Use the on-disk randomized name; browsers will save that by default
+    return send_file(path, mimetype=ctype, as_attachment=True, download_name=path.name)
 
 
 def _generate_stream():
@@ -375,3 +464,4 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.logger.info("Starting server on http://127.0.0.1:%d", port)
     app.run(host="127.0.0.1", port=port, debug=True, threaded=True)
+
